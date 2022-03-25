@@ -1,18 +1,10 @@
-
+use near_contract_standards::non_fungible_token::{Token, TokenId};
 use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
 use near_sdk::collections::*;
 use near_sdk::{
-    env,
-    ext_contract,
-    json_types::U128,
-    log,
-    near_bindgen,
-    AccountId,
-    PanicOnDefault,
-    Promise,
+    env, ext_contract, json_types::U128, log, near_bindgen, AccountId, PanicOnDefault, Promise,
     PromiseOrValue,
 };
-use near_contract_standards::non_fungible_token::{Token, TokenId};
 
 #[near_bindgen]
 #[derive(BorshDeserialize, BorshSerialize, PanicOnDefault)]
@@ -27,7 +19,7 @@ pub struct CrossContract {
 pub struct Stake {
     timestamp: u64,
     staked_id: TokenId,
-    owner_id: AccountId
+    owner_id: AccountId,
 }
 
 pub trait From<T> {
@@ -63,7 +55,7 @@ pub trait NFTCrossContract {
         receiver_id: AccountId,
         token_id: TokenId,
         approval_id: Option<u64>,
-        memo: Option<String>
+        memo: Option<String>,
     ) -> (AccountId, Option<HashMap<AccountId, u64>>);
 }
 
@@ -76,7 +68,7 @@ pub trait FTCrossContract {
 impl CrossContract {
     // Default Constructor
     #[init]
-    pub fn new(ft_account: AccountId, nft_account: AccountId) -> Self{
+    pub fn new(ft_account: AccountId, nft_account: AccountId) -> Self {
         Self {
             ft_account,
             nft_account,
@@ -85,19 +77,20 @@ impl CrossContract {
         }
     }
 
-    pub fn deploy_status_message(&self, account_id: AccountId, amount: U128) {
-        Promise::new(account_id)
-            .create_account()
-            .transfer(amount.0)
-            .add_full_access_key(env::signer_account_pk())
-            .deploy_contract(
-                include_bytes!("../../status-message/res/status_message.wasm").to_vec(),
-            );
-    }
+    // pub fn deploy_status_message(&self, account_id: AccountId, amount: U128) {
+    //     Promise::new(account_id)
+    //         .create_account()
+    //         .transfer(amount.0)
+    //         .add_full_access_key(env::signer_account_pk())
+    //         .deploy_contract(
+    //             include_bytes!("../../status-message/res/status_message.wasm").to_vec(),
+    //         );
+    // }
 
     #[result_serializer(borsh)]
-    pub fn stake(&mut self, tokenId: TokenId)/*  -> PromiseOrValue<TokenId>  */{
-        //nftext::nft_transfer_call(&self, tokenId, "Stake NFT");
+    pub fn stake(&mut self, token_id: TokenId) /*  -> PromiseOrValue<TokenId>  */
+    {
+        //nftext::nft_transfer_call(&self, token_id, "Stake NFT");
         let caller = env::predecessor_account_id();
         let current_timestamp = env::block_timestamp();
         //let mut _staked = self.staked.get(&caller).unwrap().clone();
@@ -105,16 +98,16 @@ impl CrossContract {
             Some(mut _staked) => {
                 _staked.push(&Stake {
                     timestamp: current_timestamp,
-                    staked_id: tokenId.clone(),
-                    owner_id: caller.clone()
+                    staked_id: token_id.clone(),
+                    owner_id: caller.clone(),
                 });
-            },
+            }
             None => {
                 let mut new_vec: Vector<Stake> = Vector::new(b"new_vec".to_vec());
                 new_vec.push(&Stake {
                     timestamp: current_timestamp,
-                    staked_id: tokenId.clone(),
-                    owner_id: caller.clone()
+                    staked_id: token_id.clone(),
+                    owner_id: caller.clone(),
                 });
                 self.staked.insert(&caller, &new_vec);
             }
@@ -124,7 +117,7 @@ impl CrossContract {
         match self.unstaked.get(&caller) {
             Some(mut _unstaked) => {
                 _unstaked.push(&0);
-            },
+            }
             None => {
                 let new_vec: Vector<u128> = Vector::new(b"new_vec".to_vec());
                 self.unstaked.insert(&caller, &new_vec);
@@ -133,16 +126,15 @@ impl CrossContract {
         nftext::nft_transfer(
             caller.clone(),
             env::current_account_id(),
-            tokenId.clone(),
+            token_id,
             Some(1u64),
             Some(String::from("memo")),
             self.nft_account.clone(), // contract account id
-            1, // yocto NEAR to attach
-            near_sdk::Gas(20000) // gas to attach
+            1,                        // yocto NEAR to attach
+            near_sdk::Gas(20000),     // gas to attach
         );
         //nftext::nft_transfer_call(&mut self, self.nft_account, "transfer nft");
     }
-
 
     #[result_serializer(borsh)]
     pub fn unstake(&mut self) {
@@ -150,7 +142,7 @@ impl CrossContract {
         let caller = env::predecessor_account_id();
         match self.staked.get(&caller) {
             Some(mut _staked) => {
-                _staked.iter().map(|ele| {
+                _staked.iter().for_each(|ele| {
                     /* nftext::nft_transfer_call(
                         owner,
                         caller,
@@ -166,12 +158,12 @@ impl CrossContract {
                             Some(1u64),
                             Some(String::from("memo")),
                             self.nft_account.clone(), // contract account id
-                            0, // yocto NEAR to attach
-                            env::prepaid_gas() // gas to attach
+                            0,                        // yocto NEAR to attach
+                            env::prepaid_gas(),       // gas to attach
                         );
                     }
                 });
-            },
+            }
             None => {
                 log!("You didn't stake any token at all.");
             }
@@ -179,11 +171,11 @@ impl CrossContract {
     }
 
     #[result_serializer(borsh)]
-    pub fn claim(&self, tokenId: TokenId) {
+    pub fn claim(&self, token_id: TokenId) {
         let caller = env::predecessor_account_id();
         match self.staked.get(&caller) {
             Some(mut _staked) => {
-                _staked.iter().map(|ele| {
+                _staked.iter().for_each(|ele| {
                     /* nftext::nft_transfer_call(
                         owner,
                         caller,
@@ -193,16 +185,16 @@ impl CrossContract {
                     ); */
                     if ele.owner_id == caller {
                         ftext::ft_transfer(
-                            env::predecessor_account_id().clone(),
+                            env::predecessor_account_id(),
                             1_000_000_000_000_000_000u128.into(),
-                            Some(String::from("claim")),
+                            Some("claim".into()),
                             self.nft_account.clone(), // contract account id
-                            1, // yocto NEAR to attach
-                            env::prepaid_gas() // gas to attach
+                            1,                        // yocto NEAR to attach
+                            env::prepaid_gas(),       // gas to attach
                         );
                     }
                 });
-            },
+            }
             None => {
                 log!("You are not valid claimer.");
             }
@@ -216,17 +208,17 @@ impl CrossContract {
         let mut staked_timestamp = 0;
         match self.staked.get(&caller) {
             Some(mut _staked) => {
-                _staked.iter().map(|ele| {
+                _staked.iter().for_each(|ele| {
                     if ele.staked_id == token_id {
                         staked_timestamp = ele.timestamp;
                     }
                 });
-                return (current_timestamp - staked_timestamp).into();
-            },
+                (current_timestamp - staked_timestamp).into()
+            }
             None => {
                 log!("{}", "Cannot get claimable amount");
-                return 0;
-            },
+                0
+            }
         }
     }
 
