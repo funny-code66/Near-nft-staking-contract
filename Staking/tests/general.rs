@@ -1,198 +1,190 @@
-use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
-use near_sdk::collections::*;
-use near_sdk::{
-    env,
-    ext_contract,
-    json_types::U128,
-    log,
-    near_bindgen,
-    AccountId,
-    PanicOnDefault,
-    Promise,
-    PromiseOrValue,
+use near_sdk_sim::{
+    call, deploy, init_simulator, to_yocto, ContractAccount, UserAccount, DEFAULT_GAS,
+    STORAGE_AMOUNT,
 };
-use near_contract_standards::non_fungible_token::{Token, TokenId};
+use near_contract_standards::non_fungible_token::metadata::TokenMetadata;
+use near_contract_standards::non_fungible_token::TokenId;
+use near_contract_standards::non_fungible_token::Token;
+use near_primitives::views::FinalExecutionStatus;
+use near_units::parse_near;
+use near_sdk::json_types::U128;
+use near_sdk::ONE_YOCTO;
+use workspaces::prelude::DevAccountDeployer;
+use workspaces::{Account, Contract, DevNetwork, Worker};
+extern crate cross_contract_high_level;
 
-#[near_bindgen]
-#[derive(BorshDeserialize, BorshSerialize, PanicOnDefault)]
-pub struct CrossContract {
-    nft_account: AccountId,
-    ft_account: AccountId,
-    staked: UnorderedMap<AccountId, Vector<Stake>>,
-    unstaked: UnorderedMap<AccountId, Vector<u128>>,
+pub const TOKEN_ID: &str = "0";
+
+/// # Note
+/// 
+/// In workspace-rs, a user cannot pass caller account explicitly.
+/// Passing certain caller to test function is important 
+/// in NFTxxx.transfer_from() and NFTxxx.approve().
+/// 
+/// # TODO
+/// 
+/// Make test code using near_sdk_sim.
+
+
+pub async fn init(
+    worker: &Worker<impl DevNetwork>,
+) -> anyhow::Result<(Contract, Contract, Contract, UserAccount, Account, Account)> {
+    let nft_contract =
+        worker.dev_deploy(include_bytes!("../../non-fungible-token/res/non_fungible_token.wasm").to_vec()).await?;
+    println!("***************************************************** 1");
+
+    let ft_contract =
+        worker.dev_deploy(include_bytes!("../../fungible-token/res/fungible_token.wasm").to_vec()).await?;
+
+    let staking_contract = worker.dev_deploy(include_bytes!("../res/cross_contract_high_level.wasm").to_vec()).await?;
+    println!("***************************************************** 2");
+
+    let res = nft_contract
+        .call(&worker, "new_default_meta")
+        .args_json((nft_contract.id(),))?
+        .gas(300_000_000_000_000)
+        .transact()
+        .await?;
+    assert!(matches!(res.status, FinalExecutionStatus::SuccessValue(_)));
+        
+    println!("***************************************************** 3");
+
+    let res = nft_contract
+        .as_account()
+        .create_subaccount(&worker, "alice")
+        .initial_balance(parse_near!("9 N"))
+        .transact()
+        .await?;
+    assert!(matches!(res.details.status, FinalExecutionStatus::SuccessValue(_)));
+    let alice = res.result;
+
+    let res = nft_contract
+        .as_account()
+        .create_subaccount(&worker, "bob")
+        .initial_balance(parse_near!("9 N"))
+        .transact()
+        .await?;
+    assert!(matches!(res.details.status, FinalExecutionStatus::SuccessValue(_)));
+    let bob = res.result;
+
+    println!("***************************************************** 4");
+
+    let mut genesis = near_sdk_sim::runtime::GenesisConfig::default();
+    genesis.gas_limit = u64::MAX;
+    genesis.gas_price = 0;
+    let master_account = init_simulator(Some(genesis));
+    println!("***************************************************** 5");
+    return Ok((staking_contract, nft_contract, ft_contract, master_account, alice, bob));
 }
 
-#[derive(Default, BorshDeserialize, BorshSerialize, Clone)]
-pub struct Stake {
-    timestamp: u64,
-    staked_id: TokenId,
-}
+#[tokio::test]
+async fn test_nft() -> anyhow::Result<()>  {
+    let worker = workspaces::sandbox();
+    let initial_balance = U128::from(parse_near!("9 N"));
+    let (staking_contract, nft_contract, ft_contract, master_account, alice, _) = init(&worker).await?;
+    
+    let owner_tokens: Vec<Token> = nft_contract
+        .call(&worker, "nft_tokens_for_owner")
+        .args_json((alice.id(), Option::<U128>::None, Option::<u64>::None))?
+        .view()
+        .await?
+        .json()?;
+    println!("***************************************************** 6");
+    assert_eq!(owner_tokens.len(), 0);
+    
+    
+    let token_metadata = TokenMetadata {
+        title: Some("Olympus Mons".into()),
+        description: Some("The tallest mountain in the charted solar system".into()),
+        media: None,
+        media_hash: None,
+        copies: Some(1u64),
+        issued_at: None,
+        expires_at: None,
+        starts_at: None,
+        updated_at: None,
+        extra: None,
+        reference: None,
+        reference_hash: None,
+    };
 
-// One can provide a name, e.g. `ext` to use for generated methods.
-#[ext_contract(nftext)]
-pub trait NFTCrossContract {
-    fn nft_transfer(
-        &self,
-        sender_id: AccountId,
-        receiver_id: AccountId,
-        token_id: TokenId,
-        approval_id: Option<u64>,
-        memo: Option<String>
-    ) -> (AccountId, Option<HashMap<AccountId, u64>>);
-}
+    let res = nft_contract
+        .call(&worker, "nft_mint")
+        .args_json((TOKEN_ID, nft_contract.id(), token_metadata))?
+        .gas(300_000_000_000_000)
+        .deposit(parse_near!("7 mN"))
+        .transact()
+        .await?;
+    println!("***************************************************** 7");
+    
+    assert!(matches!(res.status, FinalExecutionStatus::SuccessValue(_)));
 
-#[ext_contract(ftext)]
-pub trait FTCrossContract {
-    fn ft_transfer(&mut self, receiver_id: AccountId, amount: U128, memo: Option<String>);
-}
+    let owner_tokens: Vec<Token> = nft_contract
+        .call(&worker, "nft_tokens_for_owner")
+        .args_json((nft_contract.id(), Option::<U128>::None, Option::<u64>::None))?
+        .view()
+        .await?
+        .json()?;
+    println!("***************************************************** 8");
+    
+    assert_eq!(owner_tokens.len(), 1);
 
-// If the name is not provided, the namespace for generated methods in derived by applying snake
-// case to the trait name, e.g. ext_status_message.
-/*
-#[ext_contract]
-pub trait ExtStatusMessage {
-    fn set_status(&mut self, message: String);
-    fn get_status(&self, account_id: AccountId) -> Option<String>;
-}
-*/ 
+    assert_eq!(owner_tokens.get(0).unwrap().token_id, "0".to_string());
 
-#[near_bindgen]
-impl CrossContract {
-    // Default Constructor
-    #[init]
-    pub fn new(ft_account: AccountId, nft_account: AccountId,) -> Self{
-        Self {
-            ft_account,
-            nft_account,
-            staked: UnorderedMap::new(b"staked".to_vec()),
-            unstaked: UnorderedMap::new(b"unstaked".to_vec()),
-        }
-    }
+    let res = ft_contract
+        .call(&worker, "new_default_meta")
+        .args_json((alice.id(), initial_balance))?
+        .gas(300_000_000_000_000)
+        .transact()
+        .await?;
+    println!("***************************************************** 9");
 
-    pub fn deploy_status_message(&self, account_id: AccountId, amount: U128) {
-        Promise::new(account_id)
-            .create_account()
-            .transfer(amount.0)
-            .add_full_access_key(env::signer_account_pk())
-            .deploy_contract(
-                include_bytes!("../../status-message/res/status_message.wasm").to_vec(),
-            );
-    }
+    assert!(matches!(res.status, FinalExecutionStatus::SuccessValue(_)));
+    
 
-    #[result_serializer(borsh)]
-    pub fn stake(&mut self, tokenId: TokenId)/*  -> PromiseOrValue<TokenId>  */{
-        //nftext::nft_transfer_call(&self, tokenId, "Stake NFT");
-        let caller = env::predecessor_account_id();
-        let current_timestamp = env::block_timestamp();
-        //let mut _staked = self.staked.get(&caller).unwrap().clone();
-        match self.staked.get(&caller) {
-            Some(mut _staked) => {
-                _staked.push(&Stake {
-                    timestamp: current_timestamp,
-                    staked_id: tokenId.clone(),
-                });
-            },
-            None => {
-                let mut new_vec: Vector<Stake> = Vector::new(b"new_vec".to_vec());
-                new_vec.push(&Stake {
-                    timestamp: current_timestamp,
-                    staked_id: tokenId.clone(),
-                });
-                self.staked.insert(&caller, &new_vec);
-            }
-        }
-        // ------------------------------------------------------
+    let res = ft_contract.call(&worker, "ft_total_supply").view().await?;
+    assert_eq!(res.json::<U128>()?, initial_balance);
 
-        match self.unstaked.get(&caller) {
-            Some(mut _unstaked) => {
-                _unstaked.push(&0);
-            },
-            None => {
-                let new_vec: Vector<u128> = Vector::new(b"new_vec".to_vec());
-                self.unstaked.insert(&caller, &new_vec);
-            }
-        }
-        nftext::nft_transfer(
-            caller.clone(),
-            env::current_account_id(),
-            tokenId.clone(),
-            Some(1u64),
-            Some(String::from("memo")),
-            self.nft_account.clone(), // contract account id
-            1, // yocto NEAR to attach
-            near_sdk::Gas(10000) // gas to attach
-        );
-        //nftext::nft_transfer_call(&mut self, self.nft_account, "transfer nft");
-    }
+    let root_balance = ft_contract
+        .call(&worker, "ft_balance_of")
+        .args_json((nft_contract.id(),))?
+        .view()
+        .await?
+        .json::<U128>()?;
+    println!("***************************************************** 10");
 
-
-    #[result_serializer(borsh)]
-    pub fn unstake(&mut self) {
-        let owner = env::current_account_id();
-        let caller = env::predecessor_account_id();
-        match self.staked.get(&caller) {
-            Some(mut _staked) => {
-                _staked.iter().map(|ele| {
-                    /* nftext::nft_transfer_call(
-                        owner,
-                        caller,
-                        ele.staked_id,
-                        String::from("unstake"),
-                        String::from("unstake"),
-                    ); */
-                    nftext::nft_transfer(
-                        owner.clone(),
-                        caller.clone(),
-                        ele.staked_id,
-                        Some(1u64),
-                        Some(String::from("memo")),
-                        self.nft_account.clone(), // contract account id
-                        0, // yocto NEAR to attach
-                        env::prepaid_gas() // gas to attach
-                    );
-
-                });
-            },
-            None => {
-                log!("You didn't stake any token at all.");
-            }
-        }
-    }
-
-    #[result_serializer(borsh)]
-    pub fn claim(&self, tokenId: TokenId) {
-        ftext::ft_transfer(
-            env::predecessor_account_id().clone(),
-            1_000_000_000_000_000_000u128.into(),
-            Some(String::from("claim")),
-            self.nft_account.clone(), // contract account id
-            1, // yocto NEAR to attach
-            env::prepaid_gas() // gas to attach
-        );
-    }
-
-    #[result_serializer(borsh)]
-    pub fn get_claimable(&self, token_id: TokenId) -> u128 {
-        let caller = env::predecessor_account_id();
-        let current_timestamp = env::block_timestamp();
-        let mut staked_timestamp = 0;
-        match self.staked.get(&caller) {
-            Some(mut _staked) => {
-                _staked.iter().map(|ele| {
-                    if ele.staked_id == token_id {
-                        staked_timestamp = ele.timestamp;
-                    }
-                });
-                return (current_timestamp - staked_timestamp).into();
-            },
-            None => {
-                log!("{}", "Cannot get claimable amount");
-                return 0;
-            },
-        }
-    }
-
-    pub fn transfer_money(&mut self, account_id: AccountId, amount: u64) {
-        Promise::new(account_id).transfer(amount as u128);
-    }
+    assert_eq!(root_balance, U128::from(parse_near!("0 N")));
+    
+    let res = nft_contract
+        .call(&worker, "nft_approve")
+        .args_json((TOKEN_ID, staking_contract.id(), Option::<String>::None))?
+        .gas(300_000_000_000_000)
+        .deposit(510000000000000000000)
+        .transact()
+        .await?;
+    println!("***************************************************** 11");
+    assert!(matches!(res.status, FinalExecutionStatus::SuccessValue(_)));
+    let res = nft_contract
+        .call(&worker, "nft_transfer")
+        .args_json((
+            alice.id(),
+            TOKEN_ID,
+            Option::<u64>::None,
+            Some("simple transfer".to_string()),
+        ))?
+        .gas(300_000_000_000_000)
+        .deposit(ONE_YOCTO)
+        .transact()
+        .await?;
+    assert!(matches!(res.status, FinalExecutionStatus::SuccessValue(_)));
+    let owner_tokens: Vec<Token> = nft_contract
+        .call(&worker, "nft_tokens_for_owner")
+        .args_json((alice.id(), Option::<U128>::None, Option::<u64>::None))?
+        .view()
+        .await?
+        .json()?;
+    println!("***************************************************** 12");
+    assert_eq!(owner_tokens.len(), 1);
+    
+    Ok(()) 
 }
